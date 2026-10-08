@@ -1,0 +1,10 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - n1_mongo:/data/db
+volumes:
+  n1_mongo:
