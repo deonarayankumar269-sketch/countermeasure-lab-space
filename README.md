@@ -1,93 +1,80 @@
 # N1 Lab
 
-N-of-1 countermeasure lab. One person designs a randomized ABAB crossover test (intervention vs usual routine), logs an outcome every day or imports a wearable CSV, and gets a Bayesian answer that accounts for day-to-day autocorrelation: keep it, drop it, or extend the test.
+Small crews can't run proper studies. Four to six people is nowhere near enough for a population trial, so this app flips it around: each person runs their own experiment on themselves and gets an answer that's only about them.
 
-Stack: React 18 + Vite, Express 4, MongoDB (Mongoose), JWT in an httpOnly cookie.
+You pick a countermeasure (a sleep schedule, an exercise routine, caffeine timing, anything you can switch on and off), the app builds a randomized ABAB schedule with washout days, you log one outcome a day, and it tells you something like "deep sleep up about 11 min, 80% interval 2 to 20, not conclusive yet". Then you keep it, drop it, or extend the test.
 
-## Run it
+It started as a space-crew idea but the same thing works on the ground. Someone with a chronic condition can test whether a diet or when they take a medication actually makes a difference for them.
 
-Needs Node 18.17+ (22 is fine). Mongo is optional, see below.
+Live: https://countermeasure-lab-space.vercel.app
 
-    npm run setup
+Backend is on Render's free tier, so if nobody has touched it for 15 minutes the first request takes 30 to 50 seconds. Just wait it out.
+
+## Stack
+
+React + Vite on the front, Express + Mongoose on the back, MongoDB Atlas for the database. Auth is a JWT in an httpOnly cookie. CSS is written by hand, charts are plain SVG, the starfield is canvas. No UI kit, no stats library; the Bayesian model, verdict rules and schedule randomizer are all in `server/`.
+
+The model treats consecutive days as correlated (an AR(1)-style noise term) instead of independent, because sleep and mood on Tuesday say a lot about Wednesday. Ignoring that makes the intervals way too confident.
+
+## Run it locally
+
+Node 18+ and a Mongo instance. `docker-compose.yml` starts one if you don't have Atlas.
+
+    git clone <repo-url>
+    cd n1-lab
+    npm install
+    cp server/.env.example server/.env
     npm run dev
 
-Open http://localhost:5173. Create an account, then press "Load sample mission" on the board to get a half-finished experiment with 75 days of data.
+Client on :5173, API on :5000. If `dev` isn't the script name, check the root package.json.
 
-API runs on :5000, the Vite dev server proxies /api to it. Everything needed is already in the zip: `server/.env` ships with working dev defaults.
+Env vars in `server/.env`:
 
-### Database
+    PORT=5000
+    NODE_ENV=development
+    MONGO_URI=mongodb://localhost:27017/n1lab
+    JWT_SECRET=<long random string>
+    JWT_DAYS=7
+    CLIENT_ORIGIN=http://localhost:5173
+    LOG_LEVEL=debug
+    ENABLE_DEMO=1
+    MEMORY_FALLBACK=0
 
-`server/.env` points at `mongodb://127.0.0.1:27017/n1lab`. Pick one:
+Put the database name at the end of `MONGO_URI`. I forgot once and everything went into `test`. For `JWT_SECRET`:
 
-- `docker compose up -d` starts Mongo on 27017 (compose file is in the root).
-- Already have Mongo running locally, nothing to do.
-- Nothing installed: in development the API falls back to an in-memory Mongo (downloads a mongod binary on first use) and warns loudly. Data is gone when you stop it. Set `MEMORY_FALLBACK=0` to turn that off, or `MONGO_URI=memory` to force it.
+    node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 
-### Seeded demo user
+`ENABLE_DEMO=1` turns on the "load sample mission" button on the board. Switch it off if real people are using the site. `.env` is gitignored, keep it that way.
 
-    npm run seed
+## Trying it out
 
-Creates `demo@n1lab.space` / `orbit-demo-1` with the sample experiment.
+Load the sample mission from the board to see a finished experiment with charts and a verdict. To test the import, upload `sample-wearable.csv` on the daily log page. Or just make an account and run the 3-step wizard.
 
-### Production-ish run
+## Tests
 
-    npm start
+    npm test
 
-Builds the client, then Express serves `client/dist` and the API from one port. Set a real `JWT_SECRET` and `NODE_ENV=production` first, the server refuses to boot with the dev secret.
+18 tests on the stats engine, verdict rules and randomizer. One of them simulates a lot of datasets and checks that the 80% intervals actually contain the true effect about 80% of the time, which is the one I care about most.
 
-## How the test works
+## Deploy
 
-Schedule (`server/src/lib/schedule.js`): `pairs` pairs of blocks, each pair is A then B or B then A decided by a seeded coin flip. Washout days sit between every two blocks and are excluded from analysis. Extending a test appends another randomized pair.
+Vercel for the client, Render for the API, Atlas for the DB.
 
-Model (`server/src/lib/stats.js`): for each logged non-washout day
+Vercel: Root Directory `client`, Vite preset, build `npm run build`, output `dist`. The API calls are proxied through `client/vercel.json`, so the browser only talks to the Vercel domain and the auth cookie stays first-party. Trying to call Render directly from the Vercel site means cross-site cookies and a lot of pain.
 
-    y_t = b0 + b1 * B_t + b2 * trend_t + e_t,   e_t ~ AR(1) with correlation phi^(gap in days)
+    {
+      "rewrites": [
+        { "source": "/api/:path*", "destination": "https://countermeasure-lab-space.onrender.com/api/:path*" },
+        { "source": "/(.*)", "destination": "/index.html" }
+      ]
+    }
 
-Given phi the posterior is closed form (normal-inverse-gamma, after whitening the AR(1) noise). phi is integrated out on a 0 to 0.95 grid, so the effect posterior is a mixture of Student-t distributions. Quantiles come from the mixture CDF, no MCMC, runs in a few ms. The test suite checks that 80% intervals cover the truth about 80% of the time.
+Render needs `NODE_ENV=production`, `MONGO_URI`, `JWT_SECRET`, `CLIENT_ORIGIN` (the Vercel URL, no trailing slash) and `ENABLE_DEMO`. Express runs with `trust proxy` on because Render sits behind a proxy and the rate limiter breaks without it.
 
-Verdict (`server/src/lib/verdict.js`): you set the smallest benefit worth keeping (delta).
+`GET /api/health` should return `{"ok":true,"db":"up"}`. First thing to check when something's off.
 
-- keep when P(benefit > delta) is at least 90%
-- drop when it is at most 10%
-- otherwise extend, with a rough estimate of how many more days it takes
+## Things to know
 
-All numbers are reported as "benefit", so for metrics where lower is better (resting HR, glucose) positive still means better.
+Short experiments come back inconclusive almost every time. Three or four blocks is about the minimum before the interval means much. That's the model being honest, not a bug.
 
-## Layout
-
-    server/src
-      index.js, app.js, db.js, config.js
-      models/        User, LogEntry, Experiment
-      routes/        auth, logs, experiments, demo
-      middleware/    auth (cookie + JWT), errors (request log, error handler)
-      lib/           stats, verdict, analysis, schedule, dates, demo data
-    server/test      node:test suites (npm test)
-    client/src
-      pages/         Landing, Auth, Dashboard, Logs, NewExperiment, Experiment
-      components/    Starfield, Globe, Charts (hand-written SVG), Shell, ...
-      styles/        base.css (tokens, controls), app.css (pages, charts)
-
-## API
-
-All under `/api`, JSON, cookie session.
-
-    POST   /auth/register | /auth/login | /auth/logout      GET /auth/me
-    GET    /logs?from&to     GET /logs/metrics
-    PUT    /logs/:date       DELETE /logs/:date     POST /logs/bulk
-    GET    /experiments?today=YYYY-MM-DD
-    POST   /experiments      GET|DELETE /experiments/:id
-    POST   /experiments/:id/decision   { action: keep | drop | extend, days?, note? }
-    POST   /experiments/:id/reopen
-    POST   /demo/load        GET /health
-
-## Debugging
-
-- `LOG_LEVEL=debug` (default in dev) prints every request with status and timing. Use `info` to quiet it.
-- 5xx responses include the stack in development only.
-- `GET /api/health` returns 503 when Mongo is down, the top bar in the app polls it.
-- `npm test` runs the schedule, model calibration and verdict tests.
-- Validation errors come back as `{ message, fields: { "design.pairs": "..." } }` and the forms show them inline.
-
-## Design notes
-
-Palette is a mission-control console: deep spruce background, frost text, one amber lamp colour, green/red only for keep/drop. Display type is Big Shoulders Display, body is Public Sans, both from Google Fonts (needs internet on first load, system fonts are the fallback). Motion respects `prefers-reduced-motion`.
+This helps one person decide something about their own routine. It's not medical advice, and if it's about medication, talk to your doctor before changing anything.
