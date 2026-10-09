@@ -20,8 +20,8 @@ The model treats consecutive days as correlated (an AR(1)-style noise term) inst
 
 Node 18+ and a Mongo instance. `docker-compose.yml` starts one if you don't have Atlas.
 
-    git clone <repo-url>
-    cd n1-lab
+    git clone https://github.com/deonarayankumar269-sketch/countermeasure-lab-space.git
+    cd countermeasure-lab-space
     npm install
     cp server/.env.example server/.env
     npm run dev
